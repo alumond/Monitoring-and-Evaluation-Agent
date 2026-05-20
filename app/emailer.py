@@ -66,10 +66,10 @@ class EmailDelivery:
 
     def _wrap_brand_html(self, subject: str, content_html: str, attachment_path: str = "") -> str:
         logo_html = (
-            '<img src="cid:brand-logo" alt="StanforteEdge" '
+            '<img src="cid:brand-logo" alt="Almond Ai Consulting" '
             'style="display:block;max-width:260px;height:auto;margin:0 0 18px 0;" />'
             if os.path.exists(self.settings.brand_logo_path)
-            else f'<div style="font-size:24px;font-weight:800;color:{BRAND_BLUE};">Stanforte<span style="color:{BRAND_RED};">Edge</span></div>'
+            else f'<div style="font-size:24px;font-weight:800;color:{BRAND_BLUE};">Almond Ai <span style="color:{BRAND_RED};">Consulting</span></div>'
         )
         attachment_html = ""
         if attachment_path:
@@ -104,7 +104,7 @@ class EmailDelivery:
             </tr>
             <tr>
               <td style="background:{BRAND_BLUE};padding:16px 32px;color:#FFFFFF;font-size:12px;line-height:1.5;">
-                StanforteEdge branded automated programme intelligence notification.
+                Almond Ai Consulting branded automated programme intelligence notification.
               </td>
             </tr>
           </table>
