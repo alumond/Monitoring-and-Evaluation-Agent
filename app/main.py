@@ -1,24 +1,24 @@
 import os
 from datetime import datetime
 from typing import List, Optional
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from .config import get_settings
-from .connectors import GoogleSheetsConnector
-from .classification import classify_workbook, find_activity_tracker
-from .normalization import normalize_workbook
-from .state import build_unified_project_state
-from .analytics import compute_project_analytics
-from .gemini import GeminiClient
-from .report import build_report_sections
-from .pdf import build_pdf_report
 from .emailer import EmailDelivery
 from .audit import AuditService
 from .escalation import assess_escalation, build_escalation_message
+from .intelligence_cycle import (
+    ActivityTrackerNotFound,
+    IntelligenceCycleRunner,
+    MissingConfigurationError,
+    parse_recipients,
+)
+from .scheduler import AutonomousCycleScheduler
 
 app = FastAPI(title="M&E Intelligence Engine")
 settings = get_settings()
 audit_service = AuditService(settings)
+autonomous_scheduler = AutonomousCycleScheduler(settings, audit_service)
 
 
 class TriggerPayload(BaseModel):
@@ -31,11 +31,21 @@ class TriggerPayload(BaseModel):
     event_timestamp: Optional[str] = None
 
 
+class SheetsWebhookPayload(TriggerPayload):
+    source: Optional[str] = "google_sheets_webhook"
+
+
 @app.on_event("startup")
 def startup_event() -> None:
     os.makedirs("reports", exist_ok=True)
     os.makedirs(os.path.dirname(settings.log_db_url.replace("sqlite:///", "")) or "./db", exist_ok=True)
     audit_service.init_db()
+    autonomous_scheduler.start()
+
+
+@app.on_event("shutdown")
+def shutdown_event() -> None:
+    autonomous_scheduler.stop()
 
 
 @app.get("/health")
@@ -53,67 +63,22 @@ def is_status_change(payload: TriggerPayload) -> bool:
     return False
 
 
-def parse_recipients(recipient_list: str) -> List[str]:
-    return [email.strip() for email in recipient_list.split(",") if email.strip()]
-
-
 @app.post("/trigger")
 def process_trigger(payload: TriggerPayload) -> dict:
     if not is_status_change(payload):
         return {"status": "ignored", "reason": "Event does not appear to be a status change."}
 
-    connector = GoogleSheetsConnector(settings)
-    workbook = connector.fetch_workbook()
-    classified = classify_workbook(workbook)
-    activity_tracker = find_activity_tracker(classified)
-    if not activity_tracker:
+    runner = IntelligenceCycleRunner(settings, audit_service)
+    try:
+        return runner.run(
+            mode="trigger",
+            trigger_context=payload.model_dump(),
+            force_report=True,
+        )
+    except ActivityTrackerNotFound as exc:
         raise HTTPException(status_code=404, detail="No activity tracker sheet found in workbook.")
-
-    normalized = normalize_workbook(workbook)
-    unified_state = build_unified_project_state(normalized)
-    unified_state["project_name"] = settings.project_name
-    analytics = compute_project_analytics(unified_state)
-
-    gemini = GeminiClient(settings)
-    narrative = gemini.generate_report_text(analytics, unified_state)
-    report = build_report_sections(narrative, analytics, unified_state)
-
-    period = datetime.utcnow().strftime("%Y-%m-%d")
-    filename = settings.report_filename_template.format(timestamp=datetime.utcnow().strftime("%Y%m%dT%H%M%SZ"))
-    pdf_path = os.path.join("reports", filename)
-    build_pdf_report(report, pdf_path, settings.brand_logo_path, settings.project_name)
-
-    recipients = [email.strip() for email in settings.default_recipients.split(",") if email.strip()]
-    if not recipients:
-        raise HTTPException(status_code=400, detail="No email recipients configured.")
-
-    email_delivery = EmailDelivery(settings)
-    subject = settings.report_subject_format.format(project_name=settings.project_name, period=period)
-    body = f"Attached is the latest M&E intelligence report for {settings.project_name} on {period}."
-    email_result = email_delivery.send_report(subject, body, pdf_path, recipients)
-
-    audit_service.log_trigger(
-        sheet_title=payload.changed_sheet_title or activity_tracker["title"],
-        changed_column=payload.changed_column or "status",
-        old_value=payload.old_value or "",
-        new_value=payload.new_value or "",
-        event_timestamp=payload.event_timestamp or datetime.utcnow().isoformat(),
-        payload=payload.dict(),
-    )
-    audit_service.log_report(
-        report_path=pdf_path,
-        email_status=email_result.get("status", "unknown"),
-        analytics=analytics,
-        workbook=workbook,
-        narrative=narrative,
-    )
-
-    return {
-        "status": "processed",
-        "report_path": pdf_path,
-        "email_status": email_result,
-        "analytics_summary": analytics,
-    }
+    except MissingConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 @app.post("/escalation/trigger")
@@ -124,12 +89,12 @@ def process_escalation(payload: TriggerPayload) -> dict:
             "reason": "Escalation workflow is not enabled in configuration.",
         }
 
-    connector = GoogleSheetsConnector(settings)
-    workbook = connector.fetch_workbook()
-    normalized = normalize_workbook(workbook)
-    unified_state = build_unified_project_state(normalized)
-    unified_state["project_name"] = settings.project_name
-    analytics = compute_project_analytics(unified_state)
+    runner = IntelligenceCycleRunner(settings, audit_service)
+    try:
+        intelligence = runner.load_project_intelligence()
+    except ActivityTrackerNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    analytics = intelligence["analytics"]
 
     escalation_data = assess_escalation(analytics, settings.escalation_kpi_threshold)
     if not escalation_data["should_escalate"]:
@@ -164,4 +129,67 @@ def process_escalation(payload: TriggerPayload) -> dict:
         "status": "escalation_sent",
         "email_status": email_result,
         "escalation_details": escalation_data,
+    }
+
+
+@app.post("/autonomy/run")
+def run_autonomous_cycle(
+    dry_run: bool = Query(
+        False,
+        description="Analyze and select actions without generating reports, sending email, writing to Sheets, or persisting run memory.",
+    )
+) -> dict:
+    runner = IntelligenceCycleRunner(settings, audit_service)
+    try:
+        return runner.run(
+            mode="autonomous",
+            trigger_context={
+                "source": "manual_autonomy_endpoint",
+                "event_timestamp": datetime.utcnow().isoformat() + "Z",
+                "dry_run": dry_run,
+            },
+            force_report=settings.autonomous_always_send_report,
+            dry_run=dry_run,
+        )
+    except ActivityTrackerNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except MissingConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/webhooks/google-sheets/change")
+def process_google_sheets_webhook(payload: SheetsWebhookPayload) -> dict:
+    payload_data = payload.model_dump()
+    status_change = is_status_change(payload)
+    runner = IntelligenceCycleRunner(settings, audit_service)
+    try:
+        return runner.run(
+            mode="trigger" if status_change else "autonomous",
+            trigger_context={
+                **payload_data,
+                "source": payload.source or "google_sheets_webhook",
+                "event_timestamp": payload.event_timestamp or datetime.utcnow().isoformat() + "Z",
+                "status_change": status_change,
+            },
+            force_report=status_change,
+        )
+    except ActivityTrackerNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except MissingConfigurationError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/autonomy/status")
+def get_autonomy_status() -> dict:
+    latest_memory = audit_service.get_latest_agent_memory()
+    return {
+        "scheduler": autonomous_scheduler.status(),
+        "latest_memory": {
+            "run_id": latest_memory.get("id") if latest_memory else None,
+            "mode": latest_memory.get("mode") if latest_memory else None,
+            "workbook_hash": latest_memory.get("workbook_hash") if latest_memory else None,
+            "analytics_hash": latest_memory.get("analytics_hash") if latest_memory else None,
+            "max_severity": latest_memory.get("max_severity") if latest_memory else None,
+            "decision_summary": latest_memory.get("decision_summary") if latest_memory else None,
+        },
     }

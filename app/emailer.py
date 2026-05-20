@@ -125,7 +125,7 @@ class EmailDelivery:
                     maintype="image",
                     subtype="png",
                     cid="<brand-logo>",
-                    filename="stanforteedge-logo.png",
+                    filename="almond-ai-consulting-logo.png",
                 )
         except (IndexError, OSError):
             return

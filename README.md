@@ -14,6 +14,9 @@ A production-ready backend for a Monitoring & Evaluation intelligence platform t
 - Email delivery via SMTP
 - Separate escalation workflow for operational action and KPI target breaches
 - SQLite audit logging for traceability
+- Reusable intelligence-cycle service shared by trigger and autonomous runs
+- Optional autonomous scheduler with memory-backed change detection
+- Deterministic decision policy for reports, alerts, escalations, and recommendation write-back
 
 ## Installation
 
@@ -51,6 +54,10 @@ The service exposes:
 - `GET /health` — service health check
 - `POST /trigger` — trigger event endpoint for status updates
 - `POST /escalation/trigger` — separate escalation endpoint for missed KPI target alerts
+- `POST /autonomy/run` — run one autonomous intelligence cycle immediately
+- `POST /autonomy/run?dry_run=true` — analyze and return planned autonomous actions without reports, emails, write-back, or memory persistence
+- `POST /webhooks/google-sheets/change` — receive external Google Sheets change events and run the intelligence cycle immediately
+- `GET /autonomy/status` — inspect scheduler status and latest agent memory
 
 ## Trigger payload example
 
@@ -68,6 +75,40 @@ The service exposes:
 ## Audit and logs
 
 Audit records are stored in SQLite at the path configured by `LOG_DB_URL` (default: `./db/report_audit.db`). The system logs trigger events, workbook snapshots, analytics summaries, report output paths, and email status.
+
+Autonomous runs also store durable memory in `agent_runs`, `workbook_snapshots`, `agent_findings`, `agent_recommendations`, and `agent_actions`. The decision policy compares the latest workbook hash and analytics against the previous completed agent run, then selects bounded actions:
+
+- generate and send a report
+- send an operational alert
+- send an escalation alert
+- write recommendations to the configured Google Sheet
+- no-op while still recording memory
+
+Autonomous scheduling is enabled with:
+
+```bash
+AUTONOMOUS_SCHEDULER_ENABLED=true
+AUTONOMOUS_SCHEDULER_INTERVAL_SECONDS=3600
+AUTONOMOUS_SCHEDULER_RUN_ON_STARTUP=true
+```
+
+Recommendation write-back appends recommendations to the configured `Agent Actions` tab when `AGENT_WRITEBACK_ENABLED=true`. The service account must have edit access to the workbook. If write-back fails because of permissions, report and escalation email delivery still proceed and the write-back failure is recorded as an action result.
+
+Before enabling live autonomous actions, test the policy safely:
+
+```bash
+curl -X POST "http://127.0.0.1:8000/autonomy/run?dry_run=true"
+```
+
+Dry runs fetch and analyze the live workbook, then return the action plan the decision policy would have executed. They do not generate a PDF, send email, write to Google Sheets, or update the agent's completed-run memory.
+
+For near-real-time Google Sheets monitoring, connect an external Apps Script or automation to:
+
+```bash
+POST http://127.0.0.1:8000/webhooks/google-sheets/change
+```
+
+A status-change webhook is treated like the regular trigger path and forces report delivery. Other workbook-change webhooks run the autonomous decision policy and act when thresholds are breached.
 
 ## Notes
 
