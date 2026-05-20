@@ -110,6 +110,16 @@ POST http://127.0.0.1:8000/webhooks/google-sheets/change
 
 A status-change webhook is treated like the regular trigger path and forces report delivery. Other workbook-change webhooks run the autonomous decision policy and act when thresholds are breached.
 
+## Branding
+
+Reports and email notifications are branded as Almond Ai Consulting. The default logo path is:
+
+```bash
+BRAND_LOGO_PATH=./assets/Almond AI consulting.png
+```
+
+The same branding is used in PDF reports, report emails, operational alerts, and escalation notifications.
+
 ## Notes
 
 - The system always fetches all workbook sheets on trigger.
