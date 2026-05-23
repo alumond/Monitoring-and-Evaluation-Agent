@@ -13,6 +13,7 @@ A production-ready backend for a Monitoring & Evaluation intelligence platform t
 - PDF export with branding support
 - Email delivery via SMTP
 - Separate escalation workflow for operational action and KPI target breaches
+- Optional Google Calendar corrective-action reminders for escalations
 - SQLite audit logging for traceability
 - Reusable intelligence-cycle service shared by trigger and autonomous runs
 - Optional autonomous scheduler with memory-backed change detection
@@ -93,6 +94,19 @@ AUTONOMOUS_SCHEDULER_RUN_ON_STARTUP=true
 ```
 
 Recommendation write-back appends recommendations to the configured `Agent Actions` tab when `AGENT_WRITEBACK_ENABLED=true`. The service account must have edit access to the workbook. If write-back fails because of permissions, report and escalation email delivery still proceed and the write-back failure is recorded as an action result.
+
+Escalation reminders can also be created in Google Calendar. Enable them by sharing the target calendar with the service account and setting:
+
+```bash
+GOOGLE_CALENDAR_ENABLED=true
+GOOGLE_CALENDAR_ID=your_shared_calendar_id@example.com
+GOOGLE_CALENDAR_ATTENDEES=programme.manager@example.com,me.lead@example.com
+GOOGLE_CALENDAR_TIMEZONE=Africa/Lagos
+GOOGLE_CALENDAR_REMINDER_DAYS=3
+GOOGLE_CALENDAR_REMINDER_HOUR=9
+```
+
+When enabled, the agent creates a corrective-action follow-up event after escalation, with email and popup reminders. Google blocks service accounts from directly inviting attendees unless Workspace Domain-Wide Delegation is enabled; when that happens, the agent shares the service-account calendar and sends a branded `.ics` calendar invitation email so recipients can add the reminder directly from Gmail or their device calendar app.
 
 Before enabling live autonomous actions, test the policy safely:
 

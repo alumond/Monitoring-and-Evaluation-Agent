@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from .analytics import compute_project_analytics
 from .audit import AuditService
+from .calendar import GoogleCalendarReminder
 from .classification import classify_workbook, find_activity_tracker
 from .config import get_settings
 from .connectors import GoogleSheetsConnector
@@ -157,6 +158,19 @@ class IntelligenceCycleRunner:
                 "reason": f"Recommendation write-back failed: {exc}",
             }
 
+    def _create_calendar_reminder(self, decision: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.settings.google_calendar_enabled:
+            return {"status": "skipped", "reason": "Google Calendar reminders are disabled."}
+        recipients = parse_recipients(self.settings.google_calendar_attendees or self.settings.escalation_recipients)
+        try:
+            reminder = GoogleCalendarReminder(self.settings)
+            return reminder.create_decision_reminder(decision, recipients)
+        except Exception as exc:
+            return {
+                "status": "failed",
+                "reason": f"Google Calendar reminder creation failed: {exc}",
+            }
+
     def run(
         self,
         mode: str = "manual",
@@ -227,6 +241,17 @@ class IntelligenceCycleRunner:
             escalation_result = self._send_decision_email(decision, "send_escalation")
             action_results.append(
                 _mark_action(decision, "send_escalation", escalation_result.get("status", "unknown"), escalation_result)
+            )
+
+        if _has_action(decision, "create_calendar_reminder"):
+            calendar_result = self._create_calendar_reminder(decision)
+            action_results.append(
+                _mark_action(
+                    decision,
+                    "create_calendar_reminder",
+                    calendar_result.get("status", "unknown"),
+                    calendar_result,
+                )
             )
 
         if _has_action(decision, "send_operational_alert"):

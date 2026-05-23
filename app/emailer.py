@@ -1,9 +1,13 @@
 import html
+import mimetypes
 import os
 import re
 import smtplib
+import uuid
+from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import Dict, List
+from zoneinfo import ZoneInfo
 from .config import get_settings
 
 
@@ -118,16 +122,23 @@ class EmailDelivery:
         if not os.path.exists(self.settings.brand_logo_path):
             return
         try:
-            html_part = message.get_payload()[1]
+            html_part = next(
+                (part for part in message.walk() if part.get_content_type() == "text/html"),
+                None,
+            )
+            if html_part is None:
+                return
+            mime_type, _ = mimetypes.guess_type(self.settings.brand_logo_path)
+            subtype = (mime_type or "image/png").split("/", 1)[1]
             with open(self.settings.brand_logo_path, "rb") as logo:
                 html_part.add_related(
                     logo.read(),
                     maintype="image",
-                    subtype="png",
+                    subtype=subtype,
                     cid="<brand-logo>",
-                    filename="almond-ai-consulting-logo.png",
+                    disposition="inline",
                 )
-        except (IndexError, OSError):
+        except OSError:
             return
 
     def _build_message(
@@ -168,6 +179,94 @@ class EmailDelivery:
         server.login(self.settings.smtp_username, self.settings.smtp_password)
         server.send_message(message)
         server.quit()
+
+    def _ics_text(self, value: str) -> str:
+        return (
+            str(value or "")
+            .replace("\\", "\\\\")
+            .replace(";", "\\;")
+            .replace(",", "\\,")
+            .replace("\r\n", "\\n")
+            .replace("\n", "\\n")
+        )
+
+    def _ics_datetime(self, value: datetime) -> str:
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=ZoneInfo(self.settings.google_calendar_timezone))
+        return value.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+
+    def send_calendar_invite(
+        self,
+        subject: str,
+        description: str,
+        start_at: datetime,
+        end_at: datetime,
+        recipients: List[str],
+        location: str = "",
+        uid: str = "",
+    ) -> Dict[str, str]:
+        if not recipients:
+            raise ValueError("No calendar invite recipients configured")
+        uid = uid or f"{uuid.uuid4()}@almond-ai-consulting"
+        now = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+        attendees = "\r\n".join(
+            f"ATTENDEE;CN={self._ics_text(email)};ROLE=REQ-PARTICIPANT;PARTSTAT=NEEDS-ACTION;RSVP=TRUE:mailto:{email}"
+            for email in recipients
+        )
+        ics = "\r\n".join([
+            "BEGIN:VCALENDAR",
+            "PRODID:-//Almond Ai Consulting//M&E Intelligence//EN",
+            "VERSION:2.0",
+            "CALSCALE:GREGORIAN",
+            "METHOD:REQUEST",
+            "BEGIN:VEVENT",
+            f"UID:{uid}",
+            f"DTSTAMP:{now}",
+            f"DTSTART:{self._ics_datetime(start_at)}",
+            f"DTEND:{self._ics_datetime(end_at)}",
+            f"SUMMARY:{self._ics_text(subject)}",
+            f"DESCRIPTION:{self._ics_text(description)}",
+            f"LOCATION:{self._ics_text(location)}",
+            f"ORGANIZER;CN=Almond Ai Consulting:mailto:{self.settings.email_from}",
+            attendees,
+            "BEGIN:VALARM",
+            "ACTION:DISPLAY",
+            "DESCRIPTION:M&E corrective action follow-up",
+            "TRIGGER:-PT1H",
+            "END:VALARM",
+            "END:VEVENT",
+            "END:VCALENDAR",
+            "",
+        ])
+        body = (
+            f"{description}\n\n"
+            f"Calendar reminder: {start_at.strftime('%Y-%m-%d %H:%M')} "
+            f"({self.settings.google_calendar_timezone})."
+        )
+        html_body = f"""
+          <p style="margin:0 0 14px 0;">{html.escape(description)}</p>
+          <div style="margin-top:16px;padding:14px 16px;border-left:4px solid {BRAND_RED};background:{BRAND_LIGHT};">
+            <strong style="color:{BRAND_DARK};">Calendar reminder</strong>
+            <p style="margin:6px 0 0 0;color:{BRAND_MUTED};">{html.escape(start_at.strftime('%Y-%m-%d %H:%M'))} ({html.escape(self.settings.google_calendar_timezone)})</p>
+          </div>
+        """
+        message = EmailMessage()
+        message["Subject"] = subject
+        message["From"] = self.settings.email_from
+        message["To"] = ", ".join(recipients)
+        message["Content-Class"] = "urn:content-classes:calendarmessage"
+        message.set_content(self._clean_plain_text(body))
+        message.add_alternative(self._wrap_brand_html(subject, html_body), subtype="html")
+        message.add_alternative(ics, subtype="calendar", params={"method": "REQUEST", "name": "invite.ics"})
+        message.add_attachment(
+            ics,
+            subtype="calendar",
+            filename="me-corrective-action-reminder.ics",
+            params={"method": "REQUEST"},
+        )
+        self._attach_inline_logo(message)
+        self._send_message(message)
+        return {"status": "sent", "recipients": ",".join(recipients), "uid": uid}
 
     def send_email(
         self,

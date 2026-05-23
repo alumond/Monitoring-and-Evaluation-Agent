@@ -20,13 +20,21 @@ class Settings(BaseSettings):
     escalation_recipients: str = Field("", validation_alias="ESCALATION_EMAIL_TO")
     escalation_kpi_threshold: float = Field(90.0, validation_alias="ESCALATION_KPI_THRESHOLD")
     escalation_subject_format: str = Field(
-        "Escalation Alert - {project_name} - {period}",
+        "Action Required: KPI Target Breach - {project_name} - {period}",
         validation_alias="ESCALATION_SUBJECT_FORMAT",
     )
     escalation_message_template: str = Field(
-        "Escalation detected for {project_name}. Review the attached operational action summary.",
+        "A KPI target breach has been detected for {project_name} during the {period} review cycle. This note summarizes the facts, likely delivery implications, and corrective actions requiring management follow-up.",
         validation_alias="ESCALATION_MESSAGE_TEMPLATE",
     )
+
+    google_calendar_enabled: bool = Field(False, validation_alias="GOOGLE_CALENDAR_ENABLED")
+    google_calendar_id: str = Field("", validation_alias="GOOGLE_CALENDAR_ID")
+    google_calendar_attendees: str = Field("", validation_alias="GOOGLE_CALENDAR_ATTENDEES")
+    google_calendar_timezone: str = Field("Africa/Lagos", validation_alias="GOOGLE_CALENDAR_TIMEZONE")
+    google_calendar_reminder_days: int = Field(3, validation_alias="GOOGLE_CALENDAR_REMINDER_DAYS")
+    google_calendar_reminder_hour: int = Field(9, validation_alias="GOOGLE_CALENDAR_REMINDER_HOUR")
+    google_calendar_send_updates: str = Field("all", validation_alias="GOOGLE_CALENDAR_SEND_UPDATES")
 
     autonomous_scheduler_enabled: bool = Field(False, validation_alias="AUTONOMOUS_SCHEDULER_ENABLED")
     autonomous_scheduler_interval_seconds: int = Field(3600, validation_alias="AUTONOMOUS_SCHEDULER_INTERVAL_SECONDS")

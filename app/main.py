@@ -6,6 +6,7 @@ from pydantic import BaseModel
 from .config import get_settings
 from .emailer import EmailDelivery
 from .audit import AuditService
+from .calendar import GoogleCalendarReminder
 from .escalation import assess_escalation, build_escalation_message
 from .intelligence_cycle import (
     ActivityTrackerNotFound,
@@ -117,6 +118,21 @@ def process_escalation(payload: TriggerPayload) -> dict:
 
     email_delivery = EmailDelivery(settings)
     email_result = email_delivery.send_email(subject, body, recipients, html_body=html_body)
+    if settings.google_calendar_enabled:
+        try:
+            calendar_result = GoogleCalendarReminder(settings).create_escalation_reminder(
+                escalation_data["missed_targets"],
+                escalation_data["root_causes"],
+                escalation_data["corrective_actions"],
+                recipients,
+            )
+        except Exception as exc:
+            calendar_result = {
+                "status": "failed",
+                "reason": f"Google Calendar reminder creation failed: {exc}",
+            }
+    else:
+        calendar_result = {"status": "skipped", "reason": "Google Calendar reminders are disabled."}
 
     audit_service.log_escalation(
         escalation_type="kpi_escalation",
@@ -128,6 +144,7 @@ def process_escalation(payload: TriggerPayload) -> dict:
     return {
         "status": "escalation_sent",
         "email_status": email_result,
+        "calendar_status": calendar_result,
         "escalation_details": escalation_data,
     }
 

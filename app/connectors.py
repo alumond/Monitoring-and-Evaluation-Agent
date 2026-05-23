@@ -1,9 +1,49 @@
 from datetime import datetime
+import socket
 from typing import Any, Dict, List
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from .config import get_settings
+
+
+_ORIGINAL_GETADDRINFO = socket.getaddrinfo
+_GOOGLE_API_FALLBACK_IPS = {
+    "sheets.googleapis.com": ("216.239.32.223", "216.239.34.223", "216.239.36.223", "216.239.38.223"),
+    "calendar.googleapis.com": ("216.239.32.223", "216.239.34.223", "216.239.36.223", "216.239.38.223"),
+    "generativelanguage.googleapis.com": (
+        "142.251.142.10",
+        "142.251.209.138",
+        "172.217.22.202",
+        "172.217.22.106",
+        "172.217.22.10",
+    ),
+}
+
+
+def _install_google_sheets_dns_fallback() -> None:
+    if getattr(socket.getaddrinfo, "_sheets_dns_fallback", False):
+        return
+
+    def getaddrinfo_with_sheets_fallback(host, port, family=0, type=0, proto=0, flags=0):
+        try:
+            return _ORIGINAL_GETADDRINFO(host, port, family, type, proto, flags)
+        except socket.gaierror:
+            fallback_ips = _GOOGLE_API_FALLBACK_IPS.get(host)
+            if not fallback_ips:
+                raise
+            for ip_address in fallback_ips:
+                try:
+                    return _ORIGINAL_GETADDRINFO(ip_address, port, family, type, proto, flags)
+                except socket.gaierror:
+                    continue
+            raise
+
+    getaddrinfo_with_sheets_fallback._sheets_dns_fallback = True
+    socket.getaddrinfo = getaddrinfo_with_sheets_fallback
+
+
+_install_google_sheets_dns_fallback()
 
 
 class GoogleSheetsConnector:
